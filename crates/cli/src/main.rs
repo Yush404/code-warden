@@ -51,6 +51,11 @@ pub enum ConfigAction {
         #[arg(long)]
         key: Option<String>,
     },
+    /// Set default provider (gemini, ollama, or hybrid)
+    SetProvider {
+        #[arg(long)]
+        provider: String,
+    },
     /// View current active configuration status
     Show,
     /// Remove stored Gemini API key
@@ -62,7 +67,7 @@ pub struct AuditArgs {
     #[arg(short, long, default_value = ".")]
     pub target: PathBuf,
 
-    #[arg(long, default_value = "gemini")]
+    #[arg(long, default_value = "hybrid")]
     pub provider: String,
 
     #[arg(long, default_value = "auto")]
@@ -70,6 +75,12 @@ pub struct AuditArgs {
 
     #[arg(long)]
     pub api_key: Option<String>,
+
+    #[arg(long, default_value = "http://127.0.0.1:11434")]
+    pub ollama_endpoint: String,
+
+    #[arg(long, default_value = "qwen2.5-coder:1.5b")]
+    pub ollama_model: String,
 
     #[arg(long, default_value = "both")]
     pub action: String,
@@ -125,6 +136,52 @@ fn parse_persona(name: &str) -> Persona {
     }
 }
 
+fn read_config_var(var_name: &str) -> Option<String> {
+    let global_cfg = global_config_path();
+    if global_cfg.exists() {
+        if let Ok(content) = std::fs::read_to_string(global_cfg) {
+            let prefix = format!("{}=", var_name);
+            for line in content.lines() {
+                if let Some(val) = line.strip_prefix(&prefix) {
+                    return Some(val.trim().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn set_config_var(var_name: &str, value: &str) -> anyhow::Result<()> {
+    let global_cfg = global_config_path();
+    if let Some(parent) = global_cfg.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut lines = Vec::new();
+    let prefix = format!("{}=", var_name);
+    let mut replaced = false;
+
+    if global_cfg.exists() {
+        if let Ok(content) = std::fs::read_to_string(&global_cfg) {
+            for line in content.lines() {
+                if line.starts_with(&prefix) {
+                    lines.push(format!("{}={}", var_name, value));
+                    replaced = true;
+                } else {
+                    lines.push(line.to_string());
+                }
+            }
+        }
+    }
+
+    if !replaced {
+        lines.push(format!("{}={}", var_name, value));
+    }
+
+    std::fs::write(&global_cfg, lines.join("\n") + "\n")?;
+    Ok(())
+}
+
 fn load_active_api_key(explicit_key: Option<String>) -> String {
     if let Some(k) = explicit_key {
         if !k.trim().is_empty() {
@@ -138,26 +195,10 @@ fn load_active_api_key(explicit_key: Option<String>) -> String {
         }
     }
 
-    let global_cfg = global_config_path();
-    if global_cfg.exists() {
-        if let Ok(content) = std::fs::read_to_string(global_cfg) {
-            for line in content.lines() {
-                if let Some(stripped) = line.strip_prefix("GEMINI_API_KEY=") {
-                    return stripped.trim().to_string();
-                }
-            }
-        }
-    }
-
-    String::new()
+    read_config_var("GEMINI_API_KEY").unwrap_or_default()
 }
 
 fn handle_config(args: ConfigArgs) -> anyhow::Result<()> {
-    let global_cfg = global_config_path();
-    if let Some(parent) = global_cfg.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     match args.action {
         ConfigAction::SetKey { key } => {
             let selected_key = match key {
@@ -176,32 +217,48 @@ fn handle_config(args: ConfigArgs) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            let entry = format!("GEMINI_API_KEY={}\n", selected_key);
-            std::fs::write(&global_cfg, entry)?;
+            set_config_var("GEMINI_API_KEY", &selected_key)?;
             println!(
                 "{} Stored at {}",
                 "[✔] API key saved globally.".bold().green(),
-                global_cfg.display()
+                global_config_path().display()
             );
+        }
+        ConfigAction::SetProvider { provider } => {
+            let p = provider.to_lowercase();
+            if p != "gemini" && p != "ollama" && p != "hybrid" {
+                println!(
+                    "{}",
+                    "[!] Provider must be 'gemini', 'ollama', or 'hybrid'.".red()
+                );
+                return Ok(());
+            }
+            set_config_var("DEFAULT_PROVIDER", &p)?;
+            println!("{} Default provider set to '{}'.", "[✔]".bold().green(), p);
         }
         ConfigAction::Show => {
             let key = load_active_api_key(None);
+            let prov = read_config_var("DEFAULT_PROVIDER")
+                .unwrap_or_else(|| "hybrid (auto-fallback)".to_string());
+            println!("{} Provider Preference: {}", "[*]".cyan(), prov.bold());
+
             if key.is_empty() {
-                println!("{}", "[*] No GEMINI_API_KEY configured.".yellow());
+                println!(
+                    "{}",
+                    "[*] Gemini API Key: Not configured (Ollama fallback active).".yellow()
+                );
             } else {
                 let masked = if key.len() > 8 {
                     format!("{}...{}", &key[..4], &key[key.len() - 4..])
                 } else {
                     "********".to_string()
                 };
-                println!("{} Active Key: {}", "[✔]".green(), masked);
+                println!("{} Gemini API Key: {}", "[✔]".green(), masked);
             }
         }
         ConfigAction::UnsetKey => {
-            if global_cfg.exists() {
-                let _ = std::fs::remove_file(&global_cfg);
-            }
-            println!("{}", "[✔] Global API key removed.".green());
+            set_config_var("GEMINI_API_KEY", "")?;
+            println!("{}", "[✔] Stored API key cleared.".green());
         }
     }
     Ok(())
@@ -364,17 +421,29 @@ async fn run_audit(args: AuditArgs) -> anyhow::Result<()> {
     );
     let gateway = LlmGateway::new();
 
-    let prov = if args.provider == "gemini" {
-        let key = load_active_api_key(args.api_key);
-        Provider::Gemini {
-            api_key: key,
-            model: args.model,
-        }
+    let configured_prov =
+        read_config_var("DEFAULT_PROVIDER").unwrap_or_else(|| "hybrid".to_string());
+    let effective_provider = if args.provider != "hybrid" {
+        args.provider.to_lowercase()
     } else {
-        Provider::Ollama {
-            endpoint: "http://127.0.0.1:11434".into(),
+        configured_prov.to_lowercase()
+    };
+
+    let prov = match effective_provider.as_str() {
+        "ollama" => Provider::Ollama {
+            endpoint: args.ollama_endpoint,
+            model: args.ollama_model,
+        },
+        "gemini" => Provider::Gemini {
+            api_key: load_active_api_key(args.api_key),
             model: args.model,
-        }
+        },
+        _ => Provider::Hybrid {
+            api_key: load_active_api_key(args.api_key),
+            gemini_model: args.model,
+            ollama_endpoint: args.ollama_endpoint,
+            ollama_model: args.ollama_model,
+        },
     };
 
     let review = gateway

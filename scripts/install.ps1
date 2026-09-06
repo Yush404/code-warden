@@ -6,13 +6,11 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "=== Code-Warden (cwd) Windows Master Installer ===" -ForegroundColor Cyan
 
-# 1. Ensure Winget is present
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Write-Error "Winget (Windows Package Manager) was not found. Please install the App Installer from the Microsoft Store."
+    Write-Error "Winget (Windows Package Manager) was not found."
     exit 1
 }
 
-# 2. Package Dependency Definitions
 $packages = @(
     @{ Name = "Git"; Id = "Git.Git" },
     @{ Name = "Go"; Id = "GoLang.Go" },
@@ -24,7 +22,7 @@ $packages = @(
     @{ Name = "Visual Studio 2022 Build Tools"; Id = "Microsoft.VisualStudio.2022.BuildTools" }
 )
 
-Write-Host "`n[1/5] Checking and Installing System Runtimes..." -ForegroundColor Yellow
+Write-Host "`n[1/6] Checking and Installing System Runtimes..." -ForegroundColor Yellow
 foreach ($pkg in $packages) {
     Write-Host "Checking $($pkg.Name)... " -NoNewline
     $installed = winget list --id $pkg.Id --exact --accept-source-agreements 2>$null
@@ -36,10 +34,13 @@ foreach ($pkg in $packages) {
     }
 }
 
-# Refresh Environment Variables for the current session
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
-# 3. Setup Directories
+Write-Host "`n[2/6] Verifying Ollama & Pulling Qwen 2.5 Coder..." -ForegroundColor Yellow
+Start-Process "ollama" -ArgumentList "serve" -WindowStyle Hidden -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
+& ollama pull qwen2.5-coder:1.5b
+
 $CwHome = Join-Path $env:USERPROFILE ".code-warden"
 $EnginesDir = Join-Path $CwHome "engines"
 $BinDir = Join-Path $CwHome "bin"
@@ -49,8 +50,7 @@ New-Item -ItemType Directory -Force -Path $EnginesDir | Out-Null
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $CwHome "memory") | Out-Null
 
-# 4. Clone Engine Repositories
-Write-Host "`n[2/5] Cloning Persona Repositories..." -ForegroundColor Yellow
+Write-Host "`n[3/6] Cloning Persona Repositories..." -ForegroundColor Yellow
 
 function Clone-Or-Pull($url, $folderName) {
     $dest = Join-Path $EnginesDir $folderName
@@ -78,55 +78,53 @@ Clone-Or-Pull "https://github.com/nexB/scancode-toolkit.git" "scancode-toolkit"
 Clone-Or-Pull "https://github.com/sqlfluff/sqlfluff.git" "sqlfluff"
 Clone-Or-Pull "https://github.com/schemacrawler/SchemaCrawler.git" "schemacrawler"
 
-# 5. Build Python & Go Tools
-Write-Host "`n[3/5] Setting up Virtual Environment and Native Tools..." -ForegroundColor Yellow
+Write-Host "`n[4/6] Setting up Virtual Environment and Native Tools..." -ForegroundColor Yellow
 
 if (-not (Test-Path $VenvDir)) {
     python -m venv $VenvDir
 }
 $PipExe = Join-Path $VenvDir "Scripts\pip.exe"
 & $PipExe install --upgrade pip setuptools wheel --quiet
-
-Write-Host "  -> Installing Python tools (modelscan, checkov, sqlfluff)..."
 & $PipExe install (Join-Path $EnginesDir "modelscan") (Join-Path $EnginesDir "checkov") (Join-Path $EnginesDir "sqlfluff") --quiet
 
-Write-Host "  -> Building Go tools..."
-$ActionlintSrc = Join-Path $EnginesDir "actionlint"
-$TrufflehogSrc = Join-Path $EnginesDir "trufflehog"
-$GoLicensesSrc = Join-Path $EnginesDir "go-licenses"
+Push-Location (Join-Path $EnginesDir "actionlint"); go build -o (Join-Path $BinDir "actionlint.exe") ./cmd/actionlint; Pop-Location
+Push-Location (Join-Path $EnginesDir "trufflehog"); go build -o (Join-Path $BinDir "trufflehog.exe") .; Pop-Location
+Push-Location (Join-Path $EnginesDir "go-licenses"); go build -o (Join-Path $BinDir "go-licenses.exe") .; Pop-Location
 
-Push-Location $ActionlintSrc; go build -o (Join-Path $BinDir "actionlint.exe") ./cmd/actionlint; Pop-Location
-Push-Location $TrufflehogSrc; go build -o (Join-Path $BinDir "trufflehog.exe") .; Pop-Location
-Push-Location $GoLicensesSrc; go build -o (Join-Path $BinDir "go-licenses.exe") .; Pop-Location
-
-# 6. Build and Register cwd.exe
-Write-Host "`n[4/5] Compiling and Registering Code-Warden (cwd.exe)..." -ForegroundColor Yellow
+Write-Host "`n[5/6] Compiling and Registering Code-Warden (cwd.exe)..." -ForegroundColor Yellow
 cargo build --release --bin cwd
 
 $InstallBinDir = Join-Path $env:LOCALAPPDATA "Programs\CodeWarden"
 New-Item -ItemType Directory -Force -Path $InstallBinDir | Out-Null
 Copy-Item "target\release\cwd.exe" -Destination (Join-Path $InstallBinDir "cwd.exe") -Force
 
-# Add to User PATH if missing
 $UserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
 if ($UserPath -notlike "*$InstallBinDir*") {
     [System.Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallBinDir", "User")
-    Write-Host "[✔] Added Code-Warden to User PATH." -ForegroundColor Green
 }
 
-# 7. Optional Gemini API Setup
-Write-Host "`n[5/5] Configuration" -ForegroundColor Yellow
-$ConfigPrompt = Read-Host "Would you like to configure your Gemini API Studio key now? (y/N)"
-if ($ConfigPrompt -match "^[yY](es)?$") {
-    $UserKey = Read-Host "Enter your Gemini API key"
-    if (-not [string]::IsNullOrWhiteSpace($UserKey)) {
-        $ConfigPath = Join-Path $CwHome "config.env"
-        "GEMINI_API_KEY=$($UserKey.Trim())" | Out-File -FilePath $ConfigPath -Encoding utf8
-        Write-Host "[✔] Key saved to $ConfigPath" -ForegroundColor Green
+Write-Host "`n[6/6] Configuration" -ForegroundColor Yellow
+Write-Host "Select AI Provider Mode:"
+Write-Host "  1) Hybrid (Gemini with automatic Ollama fallback) [Default]"
+Write-Host "  2) Local Only (Ollama qwen2.5-coder:1.5b)"
+Write-Host "  3) Gemini Only"
+$Choice = Read-Host "Enter choice [1-3]"
+
+$ConfigPath = Join-Path $CwHome "config.env"
+if ($Choice -eq "2") {
+    "DEFAULT_PROVIDER=ollama" | Out-File -FilePath $ConfigPath -Encoding utf8
+} elseif ($Choice -eq "3") {
+    "DEFAULT_PROVIDER=gemini" | Out-File -FilePath $ConfigPath -Encoding utf8
+    $Key = Read-Host "Enter Gemini API key"
+    if (-not [string]::IsNullOrWhiteSpace($Key)) {
+        "GEMINI_API_KEY=$($Key.Trim())" | Out-File -FilePath $ConfigPath -Append -Encoding utf8
     }
 } else {
-    Write-Host "You can set your API key anytime later using: cwd config set-key" -ForegroundColor Gray
+    "DEFAULT_PROVIDER=hybrid" | Out-File -FilePath $ConfigPath -Encoding utf8
+    $Key = Read-Host "Enter Gemini API key (Press enter to skip)"
+    if (-not [string]::IsNullOrWhiteSpace($Key)) {
+        "GEMINI_API_KEY=$($Key.Trim())" | Out-File -FilePath $ConfigPath -Append -Encoding utf8
+    }
 }
 
 Write-Host "`n=== Installation Complete! ===" -ForegroundColor Green
-Write-Host "Restart your terminal and run 'cwd audit' to begin."
