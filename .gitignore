@@ -1,0 +1,7 @@
+/target/
+**/*.rs.bk
+.env
+*.env
+reports/
+!reports/.gitkeep
+.code-warden/memory/

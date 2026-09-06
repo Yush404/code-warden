@@ -1,0 +1,11 @@
+[package]
+name = "code-warden-llm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+code-warden-core = { path = "../core" }
+anyhow.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "code-warden-scanners"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+code-warden-core = { path = "../core" }
+anyhow.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tempfile.workspace = true

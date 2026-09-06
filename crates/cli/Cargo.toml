@@ -1,0 +1,20 @@
+[package]
+name = "cwd"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "cwd"
+path = "src/main.rs"
+
+[dependencies]
+code-warden-core = { path = "../core" }
+dotenvy = "0.15"
+code-warden-scanners = { path = "../scanners" }
+code-warden-llm = { path = "../llm" }
+code-warden-remediator = { path = "../remediator" }
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+colored.workspace = true
+chrono.workspace = true
