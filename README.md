@@ -1,5 +1,10 @@
 # Code-Warden (`cwd`) 🛡️
 
+<p align="center">
+  <img src="https://github.com/Yush404/code-warden/blob/b960f9d9c343f4657a3c1db16e81933d1c44bb44/logo.png" alt="Project Logo" width="200">
+</p>
+
+
 Code-Warden (`cwd`) is an open-source, cross-platform static security auditor and automated codebase remediation CLI written in Rust. It pairs multi-tier deterministic security scanners with persona-driven AI review engines, backed by strict anti-hallucination guardrails and persistent episodic memory.
 
 ---
